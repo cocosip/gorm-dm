@@ -39,6 +39,9 @@ Thumbs.db
 # Claude Code configuration (optional - keep if needed)
 .claude/
 
+# ZCode agent session files
+.zcode/
+
 # fo-dicom source code (reference only, not part of the Go project)
 fo-dicom-code/
 .cache/
