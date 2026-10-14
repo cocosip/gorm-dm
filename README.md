@@ -131,6 +131,17 @@ go test ./...
 DM_TEST_DSN="dm://SYSDBA:SYSDBA001@localhost:5236?schema=TEST" go test -v -run Integration
 ```
 
+## Releasing
+
+Releases are automated. Pushing a `v*` tag runs the tests and build, then
+publishes a GitHub Release whose notes list every commit since the previous
+tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## License
 
 [MIT](LICENSE)
