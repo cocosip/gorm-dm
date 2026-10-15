@@ -97,8 +97,8 @@ func TestCreateMergeUpsert(t *testing.T) {
 
 	sql, _ := dryRunSQL(t, db, func(tx *gorm.DB) *gorm.DB {
 		return tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{colName, colAge}),
+			Columns:   []clause.Column{{Name: colName}},
+			DoUpdates: clause.AssignmentColumns([]string{colAge}),
 		}).Create(&testUser{Name: testUserName, Age: 20})
 	})
 
@@ -123,8 +123,8 @@ func TestCreateMergeUpsert(t *testing.T) {
 
 // With DoUpdates but no conflict columns (and no UpdateAll), the MERGE
 // statement cannot be built and must degrade to a plain INSERT. Note that
-// UpdateAll does NOT degrade: gorm fills OnConflict.Columns with the primary
-// key columns in ConvertToCreateValues.
+// GORM fills UpdateAll's target with primary key columns. An omitted generated
+// primary key also uses INSERT because it cannot match an existing row.
 func TestCreateMergeUpsertWithoutColumnsDegradesToInsert(t *testing.T) {
 	db := openDryRun(t, GormModeDM)
 
@@ -153,8 +153,7 @@ func TestCreateMySQLUpsert(t *testing.T) {
 		"%TYPE := ?;",
 		"DUP_VAL_ON_INDEX",
 		"EXECUTE IMMEDIATE",
-		"v_upsert_flag",
-		"IDENT_CURRENT",
+		"v_sql_update0",
 		"END;",
 	} {
 		if !strings.Contains(sql, want) {
@@ -171,17 +170,16 @@ func TestCreatePostgresUpsert(t *testing.T) {
 
 	sql, vars := dryRunSQL(t, db, func(tx *gorm.DB) *gorm.DB {
 		return tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
+			Columns:   []clause.Column{{Name: colName}},
 			DoUpdates: clause.AssignmentColumns([]string{colAge}),
 		}).Create(&testUser{Name: testUserName, Age: 20})
 	})
 
 	for _, want := range []string{
 		"/*DMGORM-UPSERT*/DECLARE",
-		"v_columns emp_tab := emp_tab( 'id' )",
+		"v_columns emp_tab := emp_tab( 'name' )",
 		"multiset except v_columns",
 		"DUP_VAL_ON_INDEX",
-		"IDENT_CURRENT",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("sql = %q, want it to contain %q", sql, want)

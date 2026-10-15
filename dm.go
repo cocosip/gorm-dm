@@ -12,8 +12,8 @@
 //
 //	db, err := gorm.Open(dm.Open("dm://SYSDBA:SYSDBA001@localhost:5236?schema=TEST"))
 //
-// The dialect keeps API compatibility with the official one: switching an
-// existing project over only requires changing the import path.
+// The dialect preserves the official configuration API. See README for
+// conflict handling, identity backfill and migration error semantics.
 package dm
 
 import (
@@ -34,8 +34,8 @@ import (
 // (clause.OnConflict). See Config.GormMode.
 const (
 	// GormModeDM generates DaMeng-native MERGE INTO statements. The conflict
-	// columns must be specified via clause.OnConflict{Columns: ...};
-	// otherwise the statement degrades to a plain INSERT.
+	// columns must be specified for updates; otherwise they become plain
+	// INSERTs. Targetless DoNothing uses a DM procedural block.
 	GormModeDM = 0
 	// GormModeMySQL emulates MySQL's ON DUPLICATE KEY UPDATE syntax with a
 	// DaMeng PL/SQL block.
@@ -74,7 +74,9 @@ type Config struct {
 	// columns as CLOB.
 	DefaultStringSize uint
 	// GormMode selects the upsert strategy: GormModeDM (default),
-	// GormModeMySQL or GormModePostgres.
+	// GormModeMySQL or GormModePostgres. It does not set the server's
+	// COMPATIBLE_MODE or the driver's compatibleMode DSN option. All
+	// strategies generate DM SQL, not another database's native dialect.
 	GormMode int
 }
 
