@@ -318,12 +318,12 @@ func (m Migrator) MigrateColumn(dst interface{}, field *schema.Field, columnType
 	fullDataType := strings.TrimSpace(strings.ToLower(m.DB.Migrator().FullDataTypeOf(field).SQL))
 	realDataType := strings.ToLower(columnType.DatabaseTypeName())
 
-	alterColumn := m.columnTypeDrifted(field, columnType, fullDataType, realDataType)
-	alterColumn = alterColumn || m.columnNullableDrifted(field, columnType)
-	alterColumn = alterColumn || m.columnDefaultDrifted(field, columnType)
-	alterColumn = alterColumn || m.columnCommentDrifted(field, columnType)
+	needsAlter := m.columnTypeDrifted(field, columnType, fullDataType, realDataType)
+	needsAlter = needsAlter || m.columnNullableDrifted(field, columnType)
+	needsAlter = needsAlter || m.columnDefaultDrifted(field, columnType)
+	needsAlter = needsAlter || m.columnCommentDrifted(field, columnType)
 
-	if alterColumn {
+	if needsAlter {
 		if err := m.alterColumn(dst, field.DBName); err != nil {
 			return err
 		}
@@ -375,13 +375,35 @@ func (m Migrator) columnTypeDrifted(field *schema.Field, columnType gorm.ColumnT
 			}
 			return sizes[1] != fmt.Sprint(precision) || sizes[2] != fmt.Sprint(scale)
 		}
-		if int64(field.Precision) != precision && regexp.MustCompile(fmt.Sprintf("[^0-9]%d[^0-9]", field.Precision)).MatchString(dataType) {
+		if int64(field.Precision) != precision && precisionInType(dataType, field.Precision) {
 			return true
 		}
 	}
 
 	return false
 }
+
+// precisionInType reports whether the data type mentions precision as a
+// standalone number, e.g. DECIMAL(10, 2) for precision 10. It is the
+// allocation-free equivalent of matching [^0-9]<precision>[^0-9].
+func precisionInType(dataType string, precision int) bool {
+	target := strconv.Itoa(precision)
+	for i := 0; i+len(target) <= len(dataType); i++ {
+		if dataType[i:i+len(target)] != target {
+			continue
+		}
+		if i > 0 && isDigitByte(dataType[i-1]) {
+			continue
+		}
+		if i+len(target) < len(dataType) && isDigitByte(dataType[i+len(target)]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isDigitByte(b byte) bool { return '0' <= b && b <= '9' }
 
 // columnNullableDrifted compares the NULL/NOT NULL state. Database nullable
 // equals model NotNull means the flags are inverted.

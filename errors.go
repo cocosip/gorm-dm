@@ -12,9 +12,6 @@ const (
 	// errCodeNoIdentityColumn is returned by SET IDENTITY_INSERT when the
 	// table has no identity column (-2717).
 	errCodeNoIdentityColumn int32 = -2717
-	// errCodeIdentCurrentNoIdentity is returned by IDENT_CURRENT when the
-	// table has no identity column (-7019).
-	errCodeIdentCurrentNoIdentity int32 = -7019
 )
 
 // AsDmError extracts a *dmdrv.DmError from err, unwrapping wrapped errors.

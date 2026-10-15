@@ -40,7 +40,8 @@ func TestIsDmErrorCode(t *testing.T) {
 	if !isDmErrorCode(dmErr, errCodeNoIdentityColumn) {
 		t.Fatal("isDmErrorCode(-2717 dm error, -2717) = false, want true")
 	}
-	if isDmErrorCode(fmt.Errorf("wrap: %w", dmErr), errCodeIdentCurrentNoIdentity) {
+	// -7019 is any other DaMeng error code.
+	if isDmErrorCode(fmt.Errorf("wrap: %w", dmErr), -7019) {
 		t.Fatal("isDmErrorCode(-2717 dm error, -7019) = true, want false")
 	}
 	if isDmErrorCode(errors.New("boom"), errCodeNoIdentityColumn) {

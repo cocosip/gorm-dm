@@ -32,6 +32,31 @@ func TestGroupByIndexName(t *testing.T) {
 	}
 }
 
+func TestPrecisionInType(t *testing.T) {
+	tests := []struct {
+		dataType  string
+		precision int
+		want      bool
+	}{
+		{dbTypeDecimalSized, 10, true},
+		// Any standalone number matches, like the regexp this replaces.
+		{dbTypeDecimalSized, 2, true},
+		{dbTypeDecimalSized, 1, false},
+		{dbTypeDecimalSized, 0, false},
+		{"NUMERIC(12, 0)", 12, true},
+		{"DECIMAL(100, 2)", 10, false},
+		{"DECIMAL(100, 2)", 100, true},
+		{dbTypeTimestampSized, 6, true},
+		{dbTypeTimestampSized, 26, false},
+		{"DOUBLE", 8, false},
+	}
+	for _, tt := range tests {
+		if got := precisionInType(tt.dataType, tt.precision); got != tt.want {
+			t.Errorf("precisionInType(%q, %d) = %v, want %v", tt.dataType, tt.precision, got, tt.want)
+		}
+	}
+}
+
 const (
 	catalogSchema = "APP"
 	catalogTable  = "APP.test_users"
@@ -40,11 +65,14 @@ const (
 	dbTypeVarchar = "VARCHAR"
 	dbTypeDecimal = "DECIMAL"
 	dbTypeNumeric = "NUMERIC"
-	modifyNameSQL = `MODIFY "name" VARCHAR(64) NULL`
-	schemaSQL     = "SELECT SYS_CONTEXT"
-	countTableSQL = "COUNT(TABS.NAME)"
-	columnConsSQL = "COLS.NAME, LNNVL"
-	columnDefsSQL = "COLS.NAME, COLS.DEFVAL"
+	// Reused by dm_test.go; repeated literals trip goconst.
+	dbTypeDecimalSized   = "DECIMAL(10, 2)"
+	dbTypeTimestampSized = "TIMESTAMP(6)"
+	modifyNameSQL        = `MODIFY "name" VARCHAR(64) NULL`
+	schemaSQL            = "SELECT SYS_CONTEXT"
+	countTableSQL        = "COUNT(TABS.NAME)"
+	columnConsSQL        = "COLS.NAME, LNNVL"
+	columnDefsSQL        = "COLS.NAME, COLS.DEFVAL"
 )
 
 func countStep(query string, count int64, args ...driver.Value) sqlStep {

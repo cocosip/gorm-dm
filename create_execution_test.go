@@ -126,6 +126,36 @@ func TestCreateTableWithoutIdentityAcceptsExplicitID(t *testing.T) {
 	}
 }
 
+// The -2717 answer is remembered per primary field: later inserts skip the
+// SET IDENTITY_INSERT probe, and the cached schema's AutoIncrement flag stays
+// untouched because concurrent inserts keep reading it.
+func TestNoIdentityColumnIsCachedWithoutSchemaMutation(t *testing.T) {
+	db := openScriptedDB(t, GormModeDM,
+		sqlStep{sql: "SET IDENTITY_INSERT", err: &dmdrv.DmError{ErrCode: errCodeNoIdentityColumn}},
+		sqlStep{sql: insertPrefix, args: []driver.Value{testUserName, int64(20), int64(42)}, result: sqlResult{affected: 1}},
+		sqlStep{sql: insertPrefix, args: []driver.Value{testUserName, int64(20), int64(43)}, result: sqlResult{affected: 1}},
+	)
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(&testUser{}); err != nil {
+		t.Fatal(err)
+	}
+	field := stmt.Schema.PrioritizedPrimaryField
+
+	for i, id := range []uint64{42, 43} {
+		user := testUser{ID: id, Name: testUserName, Age: 20}
+		if err := db.Create(&user).Error; err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		if user.ID != id {
+			t.Fatalf("create %d: explicit ID overwritten: %d", i, user.ID)
+		}
+	}
+
+	if !field.AutoIncrement {
+		t.Fatal("AutoIncrement flag of the cached schema was mutated")
+	}
+}
+
 func TestConflictBackfillsIDsThroughSuppliedKey(t *testing.T) {
 	for _, mode := range []int{GormModeDM, GormModePostgres} {
 		t.Run(map[int]string{GormModeDM: "merge", GormModePostgres: "postgres"}[mode], func(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
@@ -15,6 +16,12 @@ import (
 )
 
 const excludedTable = "excluded"
+
+// noIdentityFields remembers primary fields whose table has no identity
+// column (-2717), so later inserts skip the SET IDENTITY_INSERT round trip.
+// It replaces the official dialect's in-place AutoIncrement=false mutation of
+// the cached schema, which races with concurrent inserts sharing it.
+var noIdentityFields sync.Map // map[*schema.Field]struct{}
 
 // Create is the DaMeng create callback registered in Initialize. It replaces
 // gorm:create to support identity columns, MERGE INTO upserts (GormModeDM)
@@ -127,7 +134,13 @@ func applyIdentityInsert(db *gorm.DB) func() {
 		return noopCleanup
 	}
 	field := db.Statement.Schema.PrioritizedPrimaryField
-	if field == nil || !field.AutoIncrement || !initSetIdentity(db, field) {
+	if field == nil || !field.AutoIncrement {
+		return noopCleanup
+	}
+	if _, noIdentity := noIdentityFields.Load(field); noIdentity {
+		return noopCleanup
+	}
+	if !initSetIdentity(db, field) {
 		return noopCleanup
 	}
 	if db.DryRun || db.Error != nil {
@@ -163,8 +176,9 @@ func initSetIdentity(db *gorm.DB, field *schema.Field) bool {
 }
 
 // setIdentityOn executes SET IDENTITY_INSERT <table> ON. It returns false
-// when the table has no identity column (-2717); in that case the
-// AutoIncrement flag is cleared so later inserts skip this round trip.
+// when the table has no identity column (-2717); the field is then remembered
+// in noIdentityFields so later inserts skip this round trip without mutating
+// the cached schema.
 func setIdentityOn(db *gorm.DB) (bool, string) {
 	db.Statement.SQL.Reset()
 	_, _ = db.Statement.WriteString("SET IDENTITY_INSERT ")
@@ -174,7 +188,7 @@ func setIdentityOn(db *gorm.DB) (bool, string) {
 	if db.AddError(err) != nil {
 		if isDmErrorCode(err, errCodeNoIdentityColumn) && db.Statement.Schema != nil &&
 			db.Statement.Schema.PrioritizedPrimaryField != nil {
-			db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement = false
+			noIdentityFields.Store(db.Statement.Schema.PrioritizedPrimaryField, struct{}{})
 			db.Error = nil
 			return false, ""
 		}
