@@ -110,7 +110,7 @@ func (m Migrator) AutoMigrate(dst ...interface{}) error {
 }
 
 func (m Migrator) withDB(db *gorm.DB) Migrator {
-	m.Migrator.Config.DB = db
+	m.DB = db
 	return m
 }
 

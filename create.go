@@ -14,6 +14,8 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+const excludedTable = "excluded"
+
 // Create is the DaMeng create callback registered in Initialize. It replaces
 // gorm:create to support identity columns, MERGE INTO upserts (GormModeDM)
 // and MySQL/PostgreSQL-compatible upserts (GormModeMySQL/GormModePostgres).
@@ -275,7 +277,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	for _, col := range onConflict.Columns {
 		where.Exprs = append(where.Exprs, clause.Eq{
 			Column: clause.Column{Table: getTableName(db.Statement), Name: col.Name},
-			Value:  clause.Column{Table: "excluded", Name: col.Name},
+			Value:  clause.Column{Table: excludedTable, Name: col.Name},
 		})
 	}
 	where.Build(db.Statement)
@@ -333,7 +335,7 @@ func writeMergeInsert(db *gorm.DB, values clause.Values) {
 		}
 		written = true
 		db.Statement.WriteQuoted(clause.Column{
-			Table: "excluded",
+			Table: excludedTable,
 			Name:  column.Name,
 		})
 	}
@@ -462,7 +464,7 @@ func writeUpsertUpdateDecl(db *gorm.DB, onConflict clause.OnConflict, values cla
 			}
 			stmt.WriteQuoted(assignment.Column)
 			_, _ = stmt.WriteString(" = ")
-			if col, ok := assignment.Value.(clause.Column); ok && col.Table == "excluded" {
+			if col, ok := assignment.Value.(clause.Column); ok && col.Table == excludedTable {
 				found := false
 				for k, input := range values.Columns {
 					if input.Name == col.Name {
@@ -645,12 +647,16 @@ func execConflict(db *gorm.DB, conflict clause.OnConflict, values clause.Values,
 		for _, key := range conflict.Columns {
 			if assignment.Column.Name == key.Name {
 				col, ok := assignment.Value.(clause.Column)
-				if !ok || col.Table != "excluded" || col.Name != key.Name {
+				if !ok || col.Table != excludedTable || col.Name != key.Name {
 					return
 				}
 			}
 		}
 	}
+	backfillConflictIDs(db, field, conflict, values)
+}
+
+func backfillConflictIDs(db *gorm.DB, field *schema.Field, conflict clause.OnConflict, values clause.Values) {
 	for i, row := range values.Values {
 		record := db.Statement.ReflectValue
 		if record.Kind() == reflect.Slice || record.Kind() == reflect.Array {
@@ -701,6 +707,7 @@ func execConflict(db *gorm.DB, conflict clause.OnConflict, values clause.Values,
 			return
 		}
 		var id int64
+		var err error
 		found := rows.Next()
 		if found {
 			err = rows.Scan(&id)
