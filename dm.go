@@ -128,9 +128,12 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	return nil
 }
 
-// DefaultValueOf returns the expression used for fields without a value on
-// insert. GORM v2 emits explicit NULLs, like the official dialect.
-func (d Dialector) DefaultValueOf(*schema.Field) clause.Expression {
+// DefaultValueOf preserves known database defaults in mixed-value batches.
+func (d Dialector) DefaultValueOf(field *schema.Field) clause.Expression {
+	if field.DefaultValueInterface == nil && field.DefaultValue != "" && field.DefaultValue != "(-)" {
+		return clause.Expr{SQL: field.DefaultValue}
+	}
+	// shortcut: unknown defaults retain NULL, supply a default expression for mixed batches.
 	return clause.Expr{SQL: "NULL"}
 }
 
@@ -260,7 +263,7 @@ func (d Dialector) dataTypeOfString(field *schema.Field) string {
 		if d.DefaultStringSize > 0 {
 			size = int(d.DefaultStringSize)
 		} else {
-			hasIndex := field.TagSettings["INDEX"] != "" || field.TagSettings["UNIQUE"] != ""
+			hasIndex := field.TagSettings["INDEX"] != "" || field.TagSettings["UNIQUE"] != "" || field.TagSettings["UNIQUEINDEX"] != ""
 			// TEXT-like columns cannot have a default value.
 			if field.PrimaryKey || field.HasDefaultValue || hasIndex {
 				size = 255

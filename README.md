@@ -84,8 +84,9 @@ Notes:
 - For MySQL-style update blocks, `RowsAffected` retains the dialect's convention of reporting the number of input rows; this is not native MySQL's affected-row calculation. Plain INSERT uses the driver's count. Other blocks, including `DoNothing`, report the driver's count, which may not be the number of inserted rows.
 - Conflict blocks never use a table-wide latest ID or `IDENT_CURRENT` for backfill. DM/PostgreSQL strategies may retrieve generated IDs using supplied, unchanged, non-NULL literal conflict keys. MySQL-style updates, `DoNothing`, absent keys, expressions, and changed conflict keys leave generated IDs unset. Use an application key to query the result when backfill is unavailable.
 - Partial-index conflict targets (`TargetWhere`) return an explicit unsupported error. Named constraints (`OnConstraint`) require `GormModePostgres`.
+- Mixed-value batches reuse known database default expressions (for example, `default:CURRENT_TIMESTAMP`) for omitted values in INSERT, MERGE, and procedural upserts. If every row omits a field, the column is omitted. Unknown defaults (`default:(-)`), including generated identities, retain the NULL fallback in mixed batches; specify the expression or use separate batches when NULL is unsuitable.
 
-`AutoMigrate` returns catalog lookup, scan, and iteration errors instead of treating them as missing objects and issuing DDL. The bool-only `HasTable`/`HasColumn`/`HasIndex`/`HasConstraint` APIs return false on failure and record the error on the migrator's DB. Migration detects both adding and removing a model's `not null` tag.
+`AutoMigrate` returns catalog lookup, scan, and iteration errors instead of treating them as missing objects and issuing DDL. The bool-only `HasTable`/`HasColumn`/`HasIndex`/`HasConstraint` APIs return false on failure and record the error on the migrator's DB. Migration detects adding/removing `not null` and single-column `unique` tags, as well as DECIMAL/NUMERIC precision and scale changes. Unique constraint names follow GORM's naming strategy; composite constraints are not treated as single-column uniqueness. Boolean defaults use numeric 1/0 consistently for table creation, column addition, and column alteration, without mutating cached model metadata.
 
 ## Type Mapping
 
@@ -96,7 +97,7 @@ Notes:
 | Auto-increment | appends ` IDENTITY(1,1)` |
 | Float (with precision) | `DECIMAL(p, s)` |
 | Float | `DOUBLE` |
-| String | `VARCHAR(n)`; no size and not PK/default/indexed → `CLOB`; size ≥32768 → `CLOB` |
+| String | `VARCHAR(n)`; indexed fields (including `uniqueIndex`) default to 255; no size and not PK/default/indexed → `CLOB`; size ≥32768 → `CLOB` |
 | Time | `TIMESTAMP` (with precision → `TIMESTAMP(p)`) |
 | Bytes | `VARBINARY(n)`; oversized → `BLOB` |
 

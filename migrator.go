@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -12,7 +13,10 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-var regFullDataType = regexp.MustCompile(`\D*(\d+)\D?`)
+var (
+	regFullDataType = regexp.MustCompile(`\D*(\d+)\D?`)
+	regDecimalType  = regexp.MustCompile(`(?i)^(?:DECIMAL|NUMERIC)\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)`)
+)
 
 // Migrator is the DaMeng GORM migrator. It reads metadata from the DaMeng
 // system catalog (SYS.SYSOBJECTS, SYS.SYSCOLUMNS, SYS.SYSCONS,
@@ -135,8 +139,16 @@ func (m Migrator) catalogTarget(stmt *gorm.Statement) (schemaName, table string,
 	return
 }
 
-// FullDataTypeOf returns the full data type expression of a field.
+// FullDataTypeOf returns the full data type with numeric boolean defaults.
 func (m Migrator) FullDataTypeOf(field *schema.Field) clause.Expr {
+	if value, ok := field.DefaultValueInterface.(bool); ok {
+		copyField := *field
+		copyField.DefaultValueInterface = int64(0)
+		if value {
+			copyField.DefaultValueInterface = int64(1)
+		}
+		field = &copyField
+	}
 	return m.Migrator.FullDataTypeOf(field)
 }
 
@@ -146,28 +158,8 @@ func (m Migrator) GetTypeAliases(databaseTypeName string) []string {
 }
 
 // CreateTable creates the tables and then attaches column comments, since
-// DaMeng has no inline COMMENT syntax in CREATE TABLE. Boolean default
-// values are rewritten to 1/0 because DaMeng rejects TRUE/FALSE literals.
+// DaMeng has no inline COMMENT syntax in CREATE TABLE.
 func (m Migrator) CreateTable(values ...interface{}) error {
-	for _, value := range values {
-		if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
-			for _, v := range stmt.Schema.Fields {
-				if !v.HasDefaultValue {
-					continue
-				}
-				if vv, ok := v.DefaultValueInterface.(bool); ok {
-					if vv {
-						v.DefaultValueInterface = int64(1)
-					} else {
-						v.DefaultValueInterface = int64(0)
-					}
-				}
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-	}
 	if err := m.Migrator.CreateTable(values...); err != nil {
 		return err
 	}
@@ -275,13 +267,11 @@ func (m Migrator) DropColumn(dst interface{}, field string) error {
 
 // AlterColumn alters a column to match its model field.
 func (m Migrator) AlterColumn(value interface{}, field string) error {
-	return m.alterColumn(value, field, false)
+	return m.alterColumn(value, field)
 }
 
-// alterColumn issues ALTER TABLE ... MODIFY. When the column is already
-// covered by a UNIQUE constraint the UNIQUE keyword is omitted, because
-// DaMeng rejects adding a duplicate UNIQUE constraint.
-func (m Migrator) alterColumn(value interface{}, field string, containsUnique bool) error {
+// alterColumn issues ALTER TABLE ... MODIFY; uniqueness is migrated separately.
+func (m Migrator) alterColumn(value interface{}, field string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema == nil {
 			return fmt.Errorf("alterColumn requires a model value, got %T", value)
@@ -293,9 +283,6 @@ func (m Migrator) alterColumn(value interface{}, field string, containsUnique bo
 		typeof := m.FullDataTypeOf(f)
 		if !f.NotNull && !f.PrimaryKey {
 			typeof.SQL += " NULL"
-		}
-		if containsUnique && f.Unique {
-			typeof.SQL = strings.Replace(typeof.SQL, " UNIQUE", "", 1)
 		}
 		if err := m.DB.Exec(
 			"ALTER TABLE ? MODIFY ? ?",
@@ -323,31 +310,30 @@ func (m Migrator) alterColumnComment(stmt *gorm.Statement, field *schema.Field) 
 }
 
 // MigrateColumn migrates a single column when its definition drifted from
-// the model. It mirrors gorm's default logic but routes changes through
-// alterColumn so existing UNIQUE constraints are preserved.
+// the model, then migrates its single-column UNIQUE constraint through GORM.
 func (m Migrator) MigrateColumn(dst interface{}, field *schema.Field, columnType gorm.ColumnType) error {
+	if field.IgnoreMigration {
+		return nil
+	}
 	fullDataType := strings.TrimSpace(strings.ToLower(m.DB.Migrator().FullDataTypeOf(field).SQL))
 	realDataType := strings.ToLower(columnType.DatabaseTypeName())
-	containsUnique := false
-	if unique, ok := columnType.Unique(); ok {
-		containsUnique = unique
-	}
 
 	alterColumn := m.columnTypeDrifted(field, columnType, fullDataType, realDataType)
 	alterColumn = alterColumn || m.columnNullableDrifted(field, columnType)
-	alterColumn = alterColumn || m.columnUniqueDrifted(field, columnType)
 	alterColumn = alterColumn || m.columnDefaultDrifted(field, columnType)
 	alterColumn = alterColumn || m.columnCommentDrifted(field, columnType)
 
-	if alterColumn && !field.IgnoreMigration {
-		return m.alterColumn(dst, field.DBName, containsUnique)
+	if alterColumn {
+		if err := m.alterColumn(dst, field.DBName); err != nil {
+			return err
+		}
 	}
 
-	return nil
+	return m.MigrateColumnUnique(dst, field, columnType)
 }
 
 // columnTypeDrifted compares the modeled type (and its aliases), size and
-// precision against the column reported by the database.
+// precision/scale against the column reported by the database.
 func (m Migrator) columnTypeDrifted(field *schema.Field, columnType gorm.ColumnType, fullDataType, realDataType string) bool {
 	isSameType := fullDataType == realDataType
 
@@ -380,9 +366,16 @@ func (m Migrator) columnTypeDrifted(field *schema.Field, columnType gorm.ColumnT
 		}
 	}
 
-	// check precision
-	if precision, _, ok := columnType.DecimalSize(); ok && int64(field.Precision) != precision {
-		if regexp.MustCompile(fmt.Sprintf("[^0-9]%d[^0-9]", field.Precision)).MatchString(m.Migrator.DataTypeOf(field)) {
+	// Compare the rendered type so explicit DECIMAL/NUMERIC tags work too.
+	if precision, scale, ok := columnType.DecimalSize(); ok {
+		dataType := m.Migrator.DataTypeOf(field)
+		if sizes := regDecimalType.FindStringSubmatch(dataType); len(sizes) > 0 {
+			if sizes[2] == "" {
+				sizes[2] = "0"
+			}
+			return sizes[1] != fmt.Sprint(precision) || sizes[2] != fmt.Sprint(scale)
+		}
+		if int64(field.Precision) != precision && regexp.MustCompile(fmt.Sprintf("[^0-9]%d[^0-9]", field.Precision)).MatchString(dataType) {
 			return true
 		}
 	}
@@ -395,15 +388,6 @@ func (m Migrator) columnTypeDrifted(field *schema.Field, columnType gorm.ColumnT
 func (m Migrator) columnNullableDrifted(field *schema.Field, columnType gorm.ColumnType) bool {
 	nullable, ok := columnType.Nullable()
 	if !ok || nullable != field.NotNull {
-		return false
-	}
-	return !field.PrimaryKey
-}
-
-// columnUniqueDrifted compares the UNIQUE state.
-func (m Migrator) columnUniqueDrifted(field *schema.Field, columnType gorm.ColumnType) bool {
-	unique, ok := columnType.Unique()
-	if !ok || unique == field.Unique {
 		return false
 	}
 	return !field.PrimaryKey
@@ -424,6 +408,11 @@ func (m Migrator) columnDefaultDrifted(field *schema.Field, columnType gorm.Colu
 	if !dvNotNull && currentDefaultNotNull {
 		// null -> default value
 		return true
+	}
+	if value, ok := field.DefaultValueInterface.(bool); ok && dvNotNull {
+		if current, err := strconv.ParseBool(dv); err == nil {
+			return current != value
+		}
 	}
 	if (field.GORMDataType != schema.Time && dv != field.DefaultValue) ||
 		(field.GORMDataType == schema.Time && !strings.EqualFold(strings.TrimSuffix(dv, "()"), strings.TrimSuffix(field.DefaultValue, "()"))) {
@@ -496,7 +485,8 @@ func (m Migrator) ColumnTypes(dst interface{}) ([]gorm.ColumnType, error) {
 (SELECT ID, SCHID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
 SYS.SYSCOLUMNS COLS
 WHERE TABS.ID=COLS.ID AND SCHS.ID = TABS.SCHID`
-			columnConsSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, LNNVL(CONS.TYPE$!='P'), LNNVL(CONS.TYPE$!='U') FROM
+			columnConsSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, LNNVL(CONS.TYPE$!='P'),
+CASE WHEN CONS.TYPE$ = 'U' AND COUNT(*) OVER (PARTITION BY CONS.ID) = 1 THEN 1 ELSE 0 END FROM
 (SELECT ID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCH' AND NAME = ?) SCHS,
 (SELECT ID, SCHID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
 SYS.SYSCOLUMNS COLS,
@@ -571,21 +561,11 @@ func (m Migrator) queryColumnTypes(columnTypeSQL, currentDatabase, table string,
 
 		column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
 
-		for key, value := range consMap {
-			if key != column.NameValue.String {
-				continue
-			}
-			for _, con := range value {
-				if con[0] {
-					column.PrimaryKeyValue.Bool = true
-					column.PrimaryKeyValue.Valid = true
-				}
-				if con[1] {
-					column.UniqueValue.Bool = true
-					column.UniqueValue.Valid = true
-				}
-			}
-			break
+		column.PrimaryKeyValue.Valid = true
+		column.UniqueValue.Valid = true
+		for _, con := range consMap[column.NameValue.String] {
+			column.PrimaryKeyValue.Bool = column.PrimaryKeyValue.Bool || con[0]
+			column.UniqueValue.Bool = column.UniqueValue.Bool || con[1]
 		}
 
 		for _, c := range rawColumnTypes {

@@ -79,26 +79,32 @@ func TestGormModeConstants(t *testing.T) {
 }
 
 type allTypesModel struct {
-	ID          uint64 `gorm:"primaryKey;autoIncrement"`
-	Bool        bool
-	SmallInt    int16
-	Int         int32
-	BigInt      int64
-	UInt        uint32
-	Float       float64
-	Decimal     float64 `gorm:"precision:10;scale:2"`
-	Str         string
-	StrSized    string `gorm:"size:100"`
-	StrKey      string `gorm:"primaryKey"`
-	StrIndexed  string `gorm:"index"`
-	Time        time.Time
-	TimePrecise time.Time `gorm:"precision:6"`
-	Bytes       []byte
-	BytesSized  []byte `gorm:"size:100"`
-	CustomType  string `gorm:"type:MYTYPE"`
+	ID             uint64 `gorm:"primaryKey;autoIncrement"`
+	Bool           bool
+	SmallInt       int16
+	Int            int32
+	BigInt         int64
+	UInt           uint32
+	Float          float64
+	Decimal        float64 `gorm:"precision:10;scale:2"`
+	Str            string
+	StrSized       string `gorm:"size:100"`
+	StrKey         string `gorm:"primaryKey"`
+	StrIndexed     string `gorm:"index"`
+	StrUnique      string `gorm:"uniqueIndex"`
+	StrNamed       string `gorm:"uniqueIndex:idx_named"`
+	StrPartA       string `gorm:"uniqueIndex:idx_pair"`
+	StrPartB       string `gorm:"uniqueIndex:idx_pair"`
+	StrUniqueSized string `gorm:"size:80;uniqueIndex"`
+	Time           time.Time
+	TimePrecise    time.Time `gorm:"precision:6"`
+	Bytes          []byte
+	BytesSized     []byte `gorm:"size:100"`
+	CustomType     string `gorm:"type:MYTYPE"`
 }
 
 func TestDataTypeOf(t *testing.T) {
+	const indexedStringType = "VARCHAR(255)"
 	parsed, err := schema.Parse(&allTypesModel{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {
 		t.Fatalf("parse schema: %v", err)
@@ -119,8 +125,13 @@ func TestDataTypeOf(t *testing.T) {
 		{"Decimal", "DECIMAL(10, 2)"},
 		{"Str", "CLOB"},
 		{"StrSized", "VARCHAR(100)"},
-		{"StrKey", "VARCHAR(255)"},
-		{"StrIndexed", "VARCHAR(255)"},
+		{"StrKey", indexedStringType},
+		{"StrIndexed", indexedStringType},
+		{"StrUnique", indexedStringType},
+		{"StrNamed", indexedStringType},
+		{"StrPartA", indexedStringType},
+		{"StrPartB", indexedStringType},
+		{"StrUniqueSized", "VARCHAR(80)"},
 		{"Time", "TIMESTAMP"},
 		{"TimePrecise", "TIMESTAMP(6)"},
 		{"Bytes", "BLOB"},
@@ -145,12 +156,23 @@ func TestDataTypeOfDefaultStringSize(t *testing.T) {
 	}
 
 	d := Dialector{Config: &Config{DefaultStringSize: 256}}
-	field := parsed.LookUpField("Str")
-	if field == nil {
-		t.Fatal("field Str not found")
+	for _, name := range []string{"Str", "StrUnique", "StrNamed", "StrPartA", "StrPartB"} {
+		if got := d.DataTypeOf(parsed.LookUpField(name)); got != "VARCHAR(256)" {
+			t.Errorf("DataTypeOf(%s) = %q, want VARCHAR(256)", name, got)
+		}
 	}
-	if got := d.DataTypeOf(field); got != "VARCHAR(256)" {
-		t.Errorf("DataTypeOf(Str) = %q, want %q", got, "VARCHAR(256)")
+}
+
+func TestCreateTableUniqueIndexWithoutSize(t *testing.T) {
+	type indexed struct {
+		Name string `gorm:"uniqueIndex:idx_name"`
+	}
+	db := openScriptedDB(t, GormModeDM,
+		sqlStep{sql: `CREATE TABLE "APP"."test_users" ("name" VARCHAR(255))`},
+		sqlStep{sql: `CREATE UNIQUE INDEX "idx_name" ON "APP"."test_users"("name")`},
+	).Table(catalogTable)
+	if err := db.Migrator().CreateTable(&indexed{}); err != nil {
+		t.Fatal(err)
 	}
 }
 
