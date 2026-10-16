@@ -88,6 +88,45 @@ Notes:
 
 `AutoMigrate` returns catalog lookup, scan, and iteration errors instead of treating them as missing objects and issuing DDL. The bool-only `HasTable`/`HasColumn`/`HasIndex`/`HasConstraint` APIs return false on failure and record the error on the migrator's DB. Migration detects adding/removing `not null` and single-column `unique` tags, as well as DECIMAL/NUMERIC precision and scale changes. Unique constraint names follow GORM's naming strategy; composite constraints are not treated as single-column uniqueness. Boolean defaults use numeric 1/0 consistently for table creation, column addition, and column alteration, without mutating cached model metadata.
 
+## Read-only schema metadata
+
+`ColumnTypes` and `GetIndexes` also support read-only inspection of an existing
+schema; calling them does not run DDL or create migration version records.
+`ColumnType.AutoIncrement()` reads identity from the DM system catalog, rather
+than inferring it from a primary key, column name, or default expression. For
+ordinary row-store tables it reports `(true, true)` for identity and `(false, true)` for
+non-identity columns. A NULL or inapplicable catalog flag (for example, a view)
+reports `(false, false)`: callers must check the second value before accepting a
+schema for a migration baseline.
+
+`Index.Columns()` follows the actual index key sequence, including composite
+indexes whose order differs from the table's columns. `Unique()` and
+`PrimaryKey()` retain their existing meaning; full-text indexes remain included.
+Explicit schema names take precedence, otherwise inspection uses
+`SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')`, which can differ from the login user.
+Names retain their existing case and naming strategy behavior.
+
+```go
+columns, err := db.Migrator().ColumnTypes(&User{})
+if err != nil {
+    return err
+}
+for _, column := range columns {
+    generated, known := column.AutoIncrement()
+    if !known {
+        return fmt.Errorf("identity metadata unavailable for %s", column.Name())
+    }
+    fmt.Printf("%s: identity=%t\n", column.Name(), generated)
+}
+indexes, err := db.Migrator().GetIndexes(&User{})
+if err != nil {
+    return err
+}
+for _, index := range indexes {
+    fmt.Printf("%s: ordered columns=%v\n", index.Name(), index.Columns())
+}
+```
+
 ## Type Mapping
 
 | GORM type | DaMeng type |
@@ -140,6 +179,19 @@ go test ./...
 # Integration tests (require a real DaMeng instance)
 DM_TEST_DSN="dm://SYSDBA:SYSDBA001@localhost:5236?schema=TEST" go test -v -run Integration
 ```
+
+`TestIntegrationReadOnlyMetadata` creates isolated fixtures with raw DDL to check
+identity and assigned primary keys, ordinary columns, views, reversed composite
+keys, unique/ordinary indexes, and a full-text index. To cover a current schema
+different from the login user, point `DM_TEST_DSN` at an existing separate schema
+and grant the test user the required fixture DDL permissions. Without that
+configuration the distinct-schema case is explicitly skipped. Offline tests
+check SQL generation, metadata handling and errors; they do not validate DM8's
+catalog implementation.
+
+Catalog references: [DM data dictionary](https://eco.dameng.com/document/dm/zh-cn/pm/dm8-admin-manual-appendix1.html)
+(`SYSCOLUMNS.INFO2`) and [DM system functions](https://eco.dameng.com/document/dm/zh-cn/pm/sql-appendix.html)
+(`SF_GET_INDEX_KEY_SEQ`, distinct from the ascending/descending sort direction).
 
 ## CI and releasing
 

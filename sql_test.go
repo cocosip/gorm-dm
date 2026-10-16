@@ -16,11 +16,12 @@ import (
 
 // sqlStep describes one expected database call. No network connection is opened.
 type sqlStep struct {
-	sql    string
-	args   []driver.Value
-	rows   *sqlRows
-	result sqlResult
-	err    error
+	sql      string
+	contains []string
+	args     []driver.Value
+	rows     *sqlRows
+	result   sqlResult
+	err      error
 }
 
 type sqlResult struct {
@@ -32,14 +33,16 @@ func (r sqlResult) LastInsertId() (int64, error) { return r.id, r.idErr }
 func (r sqlResult) RowsAffected() (int64, error) { return r.affected, r.affectedErr }
 
 type sqlRows struct {
-	columns []string
-	values  [][]driver.Value
-	types   []string
-	err     error
+	columns  []string
+	values   [][]driver.Value
+	types    []string
+	err      error
+	closed   bool
+	closeErr error
 }
 
 func (r *sqlRows) Columns() []string { return r.columns }
-func (r *sqlRows) Close() error      { return nil }
+func (r *sqlRows) Close() error      { r.closed = true; return r.closeErr }
 func (r *sqlRows) Next(dest []driver.Value) error {
 	if len(r.values) == 0 {
 		if r.err != nil {
@@ -84,6 +87,11 @@ func (s *sqlScript) next(query string, args []driver.NamedValue, wantRows bool) 
 	s.steps = s.steps[1:]
 	if !strings.Contains(query, step.sql) {
 		s.t.Fatalf("SQL = %q, want it to contain %q", query, step.sql)
+	}
+	for _, fragment := range step.contains {
+		if !strings.Contains(query, fragment) {
+			s.t.Fatalf("SQL = %q, want it to contain %q", query, fragment)
+		}
 	}
 	values := make([]driver.Value, len(args))
 	for i, arg := range args {

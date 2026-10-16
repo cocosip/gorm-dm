@@ -492,7 +492,7 @@ func (m Migrator) RenameColumn(value interface{}, oldName, newName string) error
 }
 
 // ColumnTypes returns the column metadata of a table, combining the raw
-// database/sql types with primary key / unique information from the system
+// database/sql types with primary key / unique / identity information from the system
 // catalog.
 func (m Migrator) ColumnTypes(dst interface{}) ([]gorm.ColumnType, error) {
 	columnTypes := make([]gorm.ColumnType, 0)
@@ -502,9 +502,13 @@ func (m Migrator) ColumnTypes(dst interface{}) ([]gorm.ColumnType, error) {
 			return err
 		}
 		var (
-			columnTypeSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, COLS.DEFVAL FROM
+			// INFO2 bit 0 is identity only for ordinary tables, not views or column stores.
+			// DM JDBC MetaSQL identifies normal storage by INFO3 & 0x003F == 0.
+			columnTypeSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, COLS.DEFVAL,
+CASE WHEN TABS.SUBTYPE$ IN ('UTAB', 'STAB') AND BITAND(TABS.INFO3, 63) = 0
+THEN BITAND(COLS.INFO2, 1) ELSE NULL END AS IS_IDENTITY FROM
 (SELECT ID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCH' AND NAME = ?) SCHS,
-(SELECT ID, SCHID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
+(SELECT ID, SCHID, SUBTYPE$, INFO3 FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
 SYS.SYSCOLUMNS COLS
 WHERE TABS.ID=COLS.ID AND SCHS.ID = TABS.SCHID`
 			columnConsSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, LNNVL(CONS.TYPE$!='P'),
@@ -577,7 +581,7 @@ func (m Migrator) queryColumnTypes(columnTypeSQL, currentDatabase, table string,
 
 	for columns.Next() {
 		var column migrator.ColumnType
-		if scanErr := columns.Scan(&column.NameValue, &column.DefaultValueValue); scanErr != nil {
+		if scanErr := columns.Scan(&column.NameValue, &column.DefaultValueValue, &column.AutoIncrementValue); scanErr != nil {
 			return scanErr
 		}
 
@@ -749,12 +753,14 @@ func (m Migrator) GetIndexes(value interface{}) ([]gorm.Index, error) {
 TAB(ID,SCHID,NAME) AS (SELECT ID, SCHID, NAME FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ = 'UTAB' AND NAME = ?)
 SELECT /*+ MAX_OPT_N_TABLES(5) */ TAB.NAME AS TABLE_NAME, COLS.NAME AS COLUMN_NAME,
 OBJ_INDS.NAME AS INDEX_NAME, CASE INDS.ISUNIQUE WHEN 'Y' THEN 0 ELSE 1 END AS NON_UNIQUE,
-CASE OBJ_INDS.TYPE$ WHEN 'P' THEN 1 ELSE 0 END AS IS_PRIMARY FROM USERS, TAB, SYS.SYSINDEXES AS INDS, SYS.SYSCOLUMNS AS COLS,
+CASE OBJ_INDS.TYPE$ WHEN 'P' THEN 1 ELSE 0 END AS IS_PRIMARY,
+SF_GET_INDEX_KEY_SEQ(INDS.KEYNUM, INDS.KEYINFO, COLS.COLID) AS KEY_POSITION FROM USERS, TAB, SYS.SYSINDEXES AS INDS, SYS.SYSCOLUMNS AS COLS,
 (SELECT INDS.ID, INDS.PID, INDS.NAME, CONS.TYPE$ FROM SYS.SYSOBJECTS AS INDS LEFT JOIN SYS.SYSCONS AS CONS ON CONS.INDEXID=INDS.ID AND SUBTYPE$='INDEX') OBJ_INDS
 WHERE TAB.ID =COLS.ID AND TAB.ID =OBJ_INDS.PID AND INDS.ID=OBJ_INDS.ID AND TAB.SCHID=USERS.ID AND SF_COL_IS_IDX_KEY(INDS.KEYNUM, INDS.KEYINFO, COLS.COLID)=1
-UNION SELECT TAB.NAME AS TABLE_NAME, COLS.NAME AS COLUMN_NAME, OBJ_INDS.NAME AS INDEX_NAME, 1 AS NON_UNIQUE, 0 AS IS_PRIMARY FROM
+UNION SELECT TAB.NAME AS TABLE_NAME, COLS.NAME AS COLUMN_NAME, OBJ_INDS.NAME AS INDEX_NAME, 1 AS NON_UNIQUE, 0 AS IS_PRIMARY, 1 AS KEY_POSITION FROM
 USERS, TAB, SYSCONTEXTINDEXES AS OBJ_INDS, SYS.SYSCOLUMNS AS COLS WHERE
-TAB.ID = COLS.ID AND TAB.ID = OBJ_INDS.TABLEID AND COLS.COLID = OBJ_INDS.COLID AND TAB.SCHID = USERS.ID;`
+TAB.ID = COLS.ID AND TAB.ID = OBJ_INDS.TABLEID AND COLS.COLID = OBJ_INDS.COLID AND TAB.SCHID = USERS.ID
+ORDER BY INDEX_NAME, KEY_POSITION;`
 
 	indexes := make([]gorm.Index, 0)
 	err := m.RunWithValue(value, func(stmt *gorm.Statement) error {

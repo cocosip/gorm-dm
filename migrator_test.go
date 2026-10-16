@@ -83,7 +83,7 @@ func userColumnSteps() []sqlStep {
 	return []sqlStep{
 		{sql: `SELECT * FROM "APP"."test_users" WHERE 1 = 0`, rows: &sqlRows{columns: []string{"id", colName, colAge}, types: []string{"BIGINT", dbTypeVarchar, dbTypeInt}}},
 		{sql: columnConsSQL, args: []driver.Value{catalogSchema, testUserTable}, rows: &sqlRows{columns: []string{colName, "pk", "unique"}, values: [][]driver.Value{{"id", true, false}, {colName, false, false}}}},
-		{sql: columnDefsSQL, args: []driver.Value{catalogSchema, testUserTable}, rows: &sqlRows{columns: []string{colName, "default"}, values: [][]driver.Value{{"id", nil}, {colName, nil}, {colAge, nil}}}},
+		{sql: columnDefsSQL, args: []driver.Value{catalogSchema, testUserTable}, rows: &sqlRows{columns: []string{colName, "default", "identity"}, values: [][]driver.Value{{"id", nil, int64(1)}, {colName, nil, int64(0)}, {colAge, nil, int64(0)}}}},
 	}
 }
 
@@ -184,21 +184,31 @@ func TestMigratorColumnTypesRejectsMetadataErrors(t *testing.T) {
 		want string
 	}{
 		{"driver query", func(s []sqlStep) []sqlStep { s[0].err = wantErr; return s[:1] }, wantErr.Error()},
+		{"driver close", func(s []sqlStep) []sqlStep { s[0].rows.closeErr = wantErr; return s[:1] }, wantErr.Error()},
 		{"constraint query", func(s []sqlStep) []sqlStep { s[1].err = wantErr; return s[:2] }, wantErr.Error()},
 		{"constraint scan", func(s []sqlStep) []sqlStep { s[1].rows.values[0][1] = "invalid"; return s[:2] }, "convert"},
 		{"constraint iteration", func(s []sqlStep) []sqlStep { s[1].rows.err = wantErr; return s[:2] }, wantErr.Error()},
+		{"constraint close", func(s []sqlStep) []sqlStep { s[1].rows.closeErr = wantErr; return s[:2] }, wantErr.Error()},
 		{"column query", func(s []sqlStep) []sqlStep { s[2].err = wantErr; return s }, wantErr.Error()},
 		{"column scan", func(s []sqlStep) []sqlStep { s[2].rows.columns = []string{colName}; return s }, "destination arguments"},
+		{"identity scan", func(s []sqlStep) []sqlStep { s[2].rows.values[0][2] = "bad identity flag"; return s }, "convert"},
 		{"column iteration", func(s []sqlStep) []sqlStep { s[2].rows.err = wantErr; return s }, wantErr.Error()},
+		{"column close", func(s []sqlStep) []sqlStep { s[2].rows.closeErr = wantErr; return s }, wantErr.Error()},
 		{"missing driver column", func(s []sqlStep) []sqlStep { s[2].rows.values[0][0] = "unknown"; return s }, "missing from driver"},
 		{"incomplete catalog", func(s []sqlStep) []sqlStep { s[2].rows.values = s[2].rows.values[:1]; return s }, "incomplete catalog"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := openScriptedDB(t, GormModeDM, tt.edit(userColumnSteps())...).Table(catalogTable)
+			steps := tt.edit(userColumnSteps())
+			db := openScriptedDB(t, GormModeDM, steps...).Table(catalogTable)
 			_, err := db.Migrator().ColumnTypes(&testUser{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ColumnTypes error = %v, want %q", err, tt.want)
+			}
+			for _, step := range steps {
+				if step.err == nil && !step.rows.closed {
+					t.Error("failed metadata rows not closed")
+				}
 			}
 		})
 	}
