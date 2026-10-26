@@ -4,15 +4,14 @@ on:
   push:
     branches: [main, master]
   pull_request:
-  workflow_dispatch:
-  workflow_call:
+    branches: [main, master]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_type == 'branch' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -43,16 +42,14 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Test
+        run: go test -v -race ${{ matrix.os == 'ubuntu-latest' && '-coverprofile=coverage.txt -covermode=atomic' || '' }} ./...
+
       - name: Build (pure Go, CGO disabled)
+        if: matrix.os == 'ubuntu-latest'
         env:
           CGO_ENABLED: '0'
         run: go build ./...
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'

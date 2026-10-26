@@ -195,19 +195,20 @@ Catalog references: [DM data dictionary](https://eco.dameng.com/document/dm/zh-c
 
 ## CI and releasing
 
-CI builds with CGO disabled, vets, and runs unit tests with the race detector
-on Linux, Windows, and macOS using Go 1.27. It also verifies module
-checksums and runs golangci-lint v2.14.0. Linux coverage is retained as
-a workflow artifact for 14 days. `DM_TEST_DSN` is not configured in hosted CI,
+CI runs unit tests with the race detector on Linux, Windows, and macOS
+using Go 1.27. The Linux job also builds with CGO disabled and collects
+coverage. CI verifies module checksums and runs golangci-lint v2.14.0,
+including govet. Linux coverage is retained as a workflow artifact for 14 days.
+`DM_TEST_DSN` is not configured in hosted CI,
 so integration tests are skipped; CI does not validate real DM compatibility.
 
 CodeQL analyzes Go code on pushes, pull requests, and a weekly schedule.
 Dependabot checks Go modules and GitHub Actions weekly and groups update PRs
 by ecosystem.
 
-Pushing a `v*` tag runs the same CI checks before publishing a GitHub Release
-with GitHub-generated release notes. Tags containing `-`, such as
-`v1.0.0-rc.1`, are marked as prereleases:
+Pushing a `v*` tag runs tests and a CGO-disabled build in a single Linux job
+before publishing a GitHub Release with GitHub-generated release notes.
+Tags containing `-`, such as `v1.0.0-rc.1`, are marked as prereleases:
 
 ```bash
 git tag v1.0.0

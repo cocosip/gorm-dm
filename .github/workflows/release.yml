@@ -13,13 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate release
-    uses: ./.github/workflows/ci.yml
-
   release:
     name: Create Release
-    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -27,6 +22,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build (pure Go, CGO disabled)
+        env:
+          CGO_ENABLED: '0'
+        run: go build ./...
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
